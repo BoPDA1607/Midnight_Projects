@@ -1,11 +1,111 @@
-# Bulletin Board DApp
+# Multi-Post Bulletin Board DApp
 
 This project is built on the [Midnight Network](https://midnight.network/).
 
 [![Generic badge](https://img.shields.io/badge/Compact%20Compiler-0.29.0-1abc9c.svg)](https://shields.io/)
 [![Generic badge](https://img.shields.io/badge/TypeScript-5.8.3-blue.svg)](https://shields.io/)
 
-A Midnight smart contract example demonstrating a simple one-item bulletin board with zero-knowledge proofs on testnet. Users can post a single message at a time, and only the message author can remove it.
+A Midnight smart contract example demonstrating a **multi-post bulletin board** with zero-knowledge proofs on testnet. Users can post multiple messages (up to MAX_POSTS), and only the respective message authors can remove their own posts.
+
+---
+
+## Track A: Multi-Post Board - Design Write-up
+
+### Design Decisions
+
+#### Why Map + postCounter Instead of Array?
+
+The original bulletin board contract used a single message storage model. For the multi-post extension, we chose to use `Map<Uint32, Post>` combined with a `postCounter` instead of an `Array` for several important reasons:
+
+1. **Efficient Deletion**: A `Map` allows O(1) deletion of any post by its key (ID) without affecting other entries. With an `Array`, removing an element from the middle would require either:
+   - Shifting all subsequent elements (expensive and breaks existing IDs)
+   - Leaving "holes" in the array (wastes space and complicates iteration)
+
+2. **Stable Post IDs**: Each post gets a permanent, unique ID that never changes. This is crucial for the CLI user experience—users can reference posts by ID even after other posts are deleted.
+
+3. **Sparse Storage**: The `Map` naturally handles gaps when posts are deleted. We don't need to track which indices are "valid" vs "empty."
+
+4. **Simple Counter Logic**: The `postCounter` auto-increments for each new post, providing unique IDs without needing to search for the next available slot.
+
+#### Why MAX_POSTS = 10?
+
+The `MAX_POSTS` constant limits the number of concurrent posts for several reasons:
+
+1. **Resource Constraints**: Zero-knowledge circuits have computational limits. Unbounded data structures would make proof generation impractical.
+
+2. **DoS Prevention**: Without a limit, an attacker could flood the board with posts, potentially causing performance issues.
+
+3. **Practical Use Case**: A bulletin board typically doesn't need unlimited posts. Ten concurrent posts is sufficient for demonstration while keeping the circuit size manageable.
+
+### Compact Patterns Applied
+
+#### Using `disclose()` for Public Data
+
+The `disclose()` function in Compact explicitly marks data that should be written to the public ledger:
+
+```compact
+const newPost = Post {
+  message: disclose(newMessage),
+  owner: disclose(ownerPk)
+};
+posts.insert(disclose(postId), newPost);
+```
+
+Every piece of data visible on-chain is intentionally disclosed. This makes the privacy model explicit—developers must consciously choose what becomes public.
+
+#### Witness Functions for Secret Keys
+
+The `localSecretKey()` witness function retrieves the user's secret key from off-chain private state:
+
+```compact
+witness localSecretKey(): Bytes<32>;
+```
+
+This pattern ensures:
+- The secret key never appears in the transaction or on-chain
+- Only the derived public key (via `publicKey()`) is disclosed
+- Users can prove ownership without revealing their identity
+
+#### Assert Statements for State Protection
+
+`assert` statements guard against invalid state transitions:
+
+```compact
+assert(posts.size() < MAX_POSTS, "Maximum number of posts reached");
+assert(posts.member(postId), "Post does not exist");
+assert(existingPost.owner == callerPk, "Only the post owner can take down this post");
+```
+
+These assertions are enforced in the zero-knowledge proof—if any assertion fails, the proof cannot be generated, and the transaction is rejected. This provides cryptographic guarantees for access control.
+
+### Privacy Properties
+
+#### What Is Public (On-Chain)
+
+1. **Post Messages**: The content of each post is fully public on the ledger. Anyone can read all active posts.
+
+2. **Owner Public Keys**: Each post stores a derived public key (`Bytes<32>`) that identifies the owner. This is a hash of `[prefix, sequence, secretKey]`.
+
+3. **Post Counter & IDs**: The total number of posts ever created and each post's unique ID are public.
+
+#### What Is Private (Off-Chain)
+
+1. **Secret Keys**: The actual secret key (`localSecretKey`) never leaves the user's device. It's only accessed through the witness function during proof generation.
+
+2. **Ownership Linkage**: While public keys are visible, linking them to real-world identities is computationally infeasible without the secret key. Each public key is derived using a secure hash, providing pseudonymous identity.
+
+3. **Proof of Ownership**: When a user takes down a post, the zero-knowledge proof demonstrates they possess the secret key corresponding to the owner's public key—without revealing the secret key itself.
+
+#### Privacy Trade-offs
+
+This design prioritizes **transparency** of content while maintaining **identity privacy**:
+- Anyone can see what's posted (public bulletin board semantics)
+- No one can impersonate another user without their secret key
+- Users can prove ownership without revealing their identity
+
+For use cases requiring private messages, the contract could be modified to encrypt messages using asymmetric encryption, with only the intended recipient able to decrypt.
+
+---
 
 ## Project Structure
 

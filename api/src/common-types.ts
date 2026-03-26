@@ -1,4 +1,4 @@
-// This file is part of midnightntwrk/example-counter.
+// This file is part of midnightntwrk/example-bboard.
 // Copyright (C) 2025 Midnight Foundation
 // SPDX-License-Identifier: Apache-2.0
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,7 +21,7 @@
 
 import { type MidnightProviders } from '@midnight-ntwrk/midnight-js-types';
 import { type FoundContract } from '@midnight-ntwrk/midnight-js-contracts';
-import type { State, BBoardPrivateState, Contract, Witnesses } from '../../contract/src/index';
+import type { BBoardPrivateState, Contract, Witnesses } from '../../contract/src/index';
 
 export const bboardPrivateStateKey = 'bboardPrivateState';
 export type PrivateStateId = typeof bboardPrivateStateKey;
@@ -78,22 +78,28 @@ export type BBoardProviders = MidnightProviders<BBoardCircuitKeys, PrivateStateI
 export type DeployedBBoardContract = FoundContract<BBoardContract>;
 
 /**
- * A type that represents the derived combination of public (or ledger), and private state.
+ * Represents a single post in the multi-post board.
+ *
+ * @public
  */
-export type BBoardDerivedState = {
-  readonly state: State;
-  readonly sequence: bigint;
-  readonly message: string | undefined;
-
-  /**
-   * A readonly flag that determines if the current message was posted by the current user.
-   *
-   * @remarks
-   * The `owner` property of the public (or ledger) state is the public key of the message owner, while
-   * the `secretKey` property of {@link BBoardPrivateState} is the secret key of the current user. If
-   * `owner` corresponds to the public key derived from `secretKey`, then `isOwner` is `true`.
-   */
+export type PostEntry = {
+  /** The unique ID of the post */
+  readonly id: number;
+  /** The message content */
+  readonly message: string;
+  /** Whether the current user owns this post */
   readonly isOwner: boolean;
 };
 
-// TODO: for some reason I needed to include "@midnight-ntwrk/wallet-sdk-address-format": "1.0.0-rc.1", should we bump in to rc-2 ?
+/**
+ * A type that represents the derived combination of public (or ledger), and private state.
+ * Now supports multiple posts instead of a single message.
+ */
+export type BBoardDerivedState = {
+  /** The sequence counter for public key derivation */
+  readonly sequence: bigint;
+  /** Total number of posts ever created */
+  readonly postCounter: number;
+  /** Array of all active posts with ownership info */
+  readonly posts: PostEntry[];
+};

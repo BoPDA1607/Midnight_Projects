@@ -1,4 +1,4 @@
-// This file is part of midnightntwrk/example-counter.
+// This file is part of midnightntwrk/example-bboard.
 // Copyright (C) 2025 Midnight Foundation
 // SPDX-License-Identifier: Apache-2.0
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +14,7 @@
 // limitations under the License.
 
 /*
- * This file is the main driver for the Midnight bulletin board example.
+ * This file is the main driver for the Midnight multi-post bulletin board example.
  * The entry point is the run function, at the end of the file.
  * We expect the startup files (testnet-remote.ts, standalone.ts, etc.) to
  * call run with some specific configuration that sets the network addresses
@@ -31,9 +31,10 @@ import {
   type BBoardProviders,
   type DeployedBBoardContract,
   type PrivateStateId,
+  type PostEntry,
 } from '../../api/src/index';
 import { type WalletFacade } from '@midnight-ntwrk/wallet-sdk-facade';
-import { ledger, type Ledger, State } from '../../contract/src/managed/bboard/contract/index.js';
+import { ledger, type Ledger } from '../../contract/src/managed/bboard/contract/index.js';
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
 import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
 import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
@@ -70,9 +71,6 @@ export const getBBoardLedgerState = async (
   const contractState = await providers.publicDataProvider.queryContractState(contractAddress);
   return contractState != null ? ledger(contractState.data) : null;
 };
-// providers.publicDataProvider
-//   .queryContractState(contractAddress)
-//   .then((contractState) => (contractState != null ? ledger(contractState.data) : null));
 
 /* **********************************************************************
  * deployOrJoin: returns a contract, by prompting the user about
@@ -82,7 +80,7 @@ export const getBBoardLedgerState = async (
 
 const DEPLOY_OR_JOIN_QUESTION = `
 You can do one of the following:
-  1. Deploy a new bulletin board contract
+  1. Deploy a new multi-post bulletin board contract
   2. Join an existing bulletin board contract
   3. Exit
 Which would you like to do? `;
@@ -125,12 +123,15 @@ const displayLedgerState = async (
   if (ledgerState === null) {
     logger.info(`There is no bulletin board contract deployed at ${contractAddress}`);
   } else {
-    const boardState = ledgerState.state === State.OCCUPIED ? 'occupied' : 'vacant';
-    const latestMessage = !ledgerState.message.is_some ? 'none' : ledgerState.message.value;
-    logger.info(`Current state is: '${boardState}'`);
-    logger.info(`Current message is: '${latestMessage}'`);
-    logger.info(`Current sequence is: ${ledgerState.sequence}`);
-    logger.info(`Current owner is: '${toHex(ledgerState.owner)}'`);
+    logger.info(`Post counter: ${ledgerState.postCounter}`);
+    logger.info(`Active posts: ${ledgerState.posts.size}`);
+    logger.info(`Sequence: ${ledgerState.sequence}`);
+    if (ledgerState.posts.size > 0) {
+      logger.info('--- Posts on the board ---');
+      for (const [id, post] of ledgerState.posts.entries()) {
+        logger.info(`  [${id}] "${post.message}" (owner: ${toHex(post.owner).substring(0, 16)}...)`);
+      }
+    }
   }
 };
 
@@ -150,37 +151,60 @@ const displayPrivateState = async (providers: BBoardProviders, logger: Logger): 
 /* **********************************************************************
  * displayDerivedState: shows the values of derived state which is made
  * by combining the ledger state with private state. In this example, the
- * derived state compares the owner's key with the private secret key to
- * determine if the current user is the owner of the current message.
+ * derived state computes ownership for each post.
  */
 
-const displayDerivedState = (ledgerState: BBoardDerivedState | undefined, logger: Logger) => {
-  if (ledgerState === undefined) {
+const displayDerivedState = (state: BBoardDerivedState | undefined, logger: Logger) => {
+  if (state === undefined) {
     logger.info(`No bulletin board state currently available`);
   } else {
-    const boardState = ledgerState.state === State.OCCUPIED ? 'occupied' : 'vacant';
-    const latestMessage = ledgerState.state === State.OCCUPIED ? ledgerState.message : 'none';
-    logger.info(`Current state is: '${boardState}'`);
-    logger.info(`Current message is: '${latestMessage}'`);
-    logger.info(`Current sequence is: ${ledgerState.sequence}`);
-    logger.info(`Current owner is: '${ledgerState.isOwner ? 'you' : 'not you'}'`);
+    logger.info(`Post counter: ${state.postCounter}`);
+    logger.info(`Active posts: ${state.posts.length}`);
+    logger.info(`Sequence: ${state.sequence}`);
+    if (state.posts.length > 0) {
+      logger.info('--- Posts on the board ---');
+      for (const post of state.posts) {
+        const ownerLabel = post.isOwner ? 'Owner' : 'Not Owner';
+        logger.info(`  [${post.id}] "${post.message}" (${ownerLabel})`);
+      }
+    } else {
+      logger.info('No posts on the board.');
+    }
   }
 };
 
 /* **********************************************************************
- * mainLoop: the main interactive menu of the bulletin board CLI.
+ * displayPostsList: shows all posts in a formatted list with ownership
+ */
+
+const displayPostsList = (posts: PostEntry[], logger: Logger) => {
+  if (posts.length === 0) {
+    logger.info('No posts on the bulletin board.');
+    return;
+  }
+  logger.info('=== Active Posts ===');
+  for (const post of posts) {
+    const ownerLabel = post.isOwner ? 'Owner' : 'Not Owner';
+    logger.info(`[${post.id}] - "${post.message}" (${ownerLabel})`);
+  }
+  logger.info('====================');
+};
+
+/* **********************************************************************
+ * mainLoop: the main interactive menu of the multi-post bulletin board CLI.
  * Before starting the loop, the user is prompted to deploy a new
  * contract or join an existing one.
  */
 
 const MAIN_LOOP_QUESTION = `
 You can do one of the following:
-  1. Post a message
-  2. Take down your message
-  3. Display the current ledger state (known by everyone)
-  4. Display the current private state (known only to this DApp instance)
-  5. Display the current derived state (known only to this DApp instance)
-  6. Exit
+  1. Post a new message
+  2. Take down a post (by ID)
+  3. List all posts
+  4. Display the current ledger state (known by everyone)
+  5. Display the current private state (known only to this DApp instance)
+  6. Display the current derived state (known only to this DApp instance)
+  7. Exit
 Which would you like to do? `;
 
 const mainLoop = async (providers: BBoardProviders, rli: Interface, logger: Logger): Promise<void> => {
@@ -199,22 +223,54 @@ const mainLoop = async (providers: BBoardProviders, rli: Interface, logger: Logg
       switch (choice) {
         case '1': {
           const message = await rli.question(`What message do you want to post? `);
-          await bboardApi.post(message);
+          try {
+            const postId = await bboardApi.post(message);
+            logger.info(`Posted message with ID: ${postId}`);
+          } catch (e) {
+            if (e instanceof Error) {
+              logger.error(`Failed to post: ${e.message}`);
+            }
+          }
           break;
         }
-        case '2':
-          await bboardApi.takeDown();
+        case '2': {
+          // Show current posts first
+          if (currentState) {
+            displayPostsList(currentState.posts, logger);
+          }
+          const postIdStr = await rli.question(`Enter ID of the post you want to delete: `);
+          const postId = parseInt(postIdStr, 10);
+          if (isNaN(postId)) {
+            logger.error('Invalid post ID. Please enter a number.');
+            break;
+          }
+          try {
+            await bboardApi.takeDown(postId);
+            logger.info(`Successfully took down post with ID: ${postId}`);
+          } catch (e) {
+            if (e instanceof Error) {
+              logger.error(`Failed to take down post: ${e.message}`);
+            }
+          }
           break;
+        }
         case '3':
-          await displayLedgerState(providers, bboardApi.deployedContract, logger);
+          if (currentState) {
+            displayPostsList(currentState.posts, logger);
+          } else {
+            logger.info('No state available yet. Please wait for the board to sync.');
+          }
           break;
         case '4':
-          await displayPrivateState(providers, logger);
+          await displayLedgerState(providers, bboardApi.deployedContract, logger);
           break;
         case '5':
-          displayDerivedState(currentState, logger);
+          await displayPrivateState(providers, logger);
           break;
         case '6':
+          displayDerivedState(currentState, logger);
+          break;
+        case '7':
           logger.info('Exiting...');
           return;
         default:
@@ -268,7 +324,7 @@ const buildWallet = async (config: Config, rli: Interface, logger: Logger): Prom
 };
 
 /* **********************************************************************
- * run: the main entry point that starts the whole bulletin board CLI.
+ * run: the main entry point that starts the whole multi-post bulletin board CLI.
  *
  * If called with a Docker environment argument, the application
  * will wait for Docker to be ready before doing anything else.

@@ -25,11 +25,12 @@ import {
   Contract,
   type Ledger,
   ledger,
+  MAX_POSTS,
 } from "../managed/bboard/contract/index.js";
 import { type BBoardPrivateState, witnesses } from "../witnesses.js";
 
 /**
- * Serves as a testbed to exercise the contract in tests
+ * Serves as a testbed to exercise the multi-post contract in tests
  */
 export class BBoardSimulator {
   readonly contract: Contract<BBoardPrivateState>;
@@ -55,10 +56,8 @@ export class BBoardSimulator {
     };
   }
 
-  /***
+  /**
    * Switch to a different secret key for a different user
-   *
-   * TODO: is there a nicer abstraction for testing multi-user dApps?
    */
   public switchUser(secretKey: Uint8Array) {
     this.circuitContext.currentPrivateState = {
@@ -74,22 +73,33 @@ export class BBoardSimulator {
     return this.circuitContext.currentPrivateState;
   }
 
-  public post(message: string): Ledger {
-    // Update the current context to be the result of executing the circuit.
-    this.circuitContext = this.contract.impureCircuits.post(
+  /**
+   * Post a new message to the board
+   * @returns The ID of the newly created post
+   */
+  public post(message: string): number {
+    const result = this.contract.impureCircuits.post(
       this.circuitContext,
       message,
-    ).context;
-    return ledger(this.circuitContext.currentQueryContext.state);
+    );
+    this.circuitContext = result.context;
+    return result.result;
   }
 
-  public takeDown(): Ledger {
+  /**
+   * Take down (delete) a post by ID
+   * @param postId The ID of the post to delete
+   */
+  public takeDown(postId: number): void {
     this.circuitContext = this.contract.impureCircuits.takeDown(
       this.circuitContext,
+      postId,
     ).context;
-    return ledger(this.circuitContext.currentQueryContext.state);
   }
 
+  /**
+   * Compute the public key for the current user
+   */
   public publicKey(): Uint8Array {
     const sequence = convertFieldToBytes(
       32,
@@ -101,5 +111,12 @@ export class BBoardSimulator {
       this.getPrivateState().secretKey,
       sequence,
     ).result;
+  }
+
+  /**
+   * Get the maximum number of posts allowed
+   */
+  public getMaxPosts(): number {
+    return MAX_POSTS;
   }
 }
