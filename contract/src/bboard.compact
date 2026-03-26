@@ -1,4 +1,4 @@
-// This file is part of midnightntwrk/example-counter.
+// This file is part of midnightntwrk/example-bboard.
 // Copyright (C) 2025 Midnight Foundation
 // SPDX-License-Identifier: Apache-2.0
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,44 +17,74 @@ pragma language_version >= 0.20;
 
 import CompactStandardLibrary;
 
-export enum State {
-  VACANT,
-  OCCUPIED
+// Maximum number of posts allowed on the board
+const MAX_POSTS: Uint32 = 10;
+
+// Post structure containing message and owner's public key hash
+export struct Post {
+  message: Opaque<"string">;
+  owner: Bytes<32>;
 }
 
-export ledger state: State;
+// Map of posts indexed by post ID
+export ledger posts: Map<Uint32, Post>;
 
-export ledger message: Maybe<Opaque<"string">>;
+// Counter for generating unique post IDs (also tracks total posts ever created)
+export ledger postCounter: Uint32;
 
+// Sequence counter for public key derivation
 export ledger sequence: Counter;
 
-export ledger owner: Bytes<32>;
-
 constructor() {
-  state = State.VACANT;
-  message = none<Opaque<"string">>();
+  postCounter = 0;
   sequence.increment(1);
 }
 
 witness localSecretKey(): Bytes<32>;
 
-export circuit post(newMessage: Opaque<"string">): [] {
-  assert(state == State.VACANT, "Attempted to post to an occupied board");
-  owner = disclose(publicKey(localSecretKey(), sequence as Field as Bytes<32>));
-  message = disclose(some<Opaque<"string">>(newMessage));
-  state = State.OCCUPIED;
+// Post a new message to the board
+export circuit post(newMessage: Opaque<"string">): Uint32 {
+  // Check that we haven't exceeded MAX_POSTS (count active posts)
+  assert(posts.size() < MAX_POSTS, "Maximum number of posts reached");
+  
+  // Generate owner's public key from secret key
+  const ownerPk = publicKey(localSecretKey(), sequence as Field as Bytes<32>);
+  
+  // Create new post with disclosed message and owner
+  const newPost = Post {
+    message: disclose(newMessage),
+    owner: disclose(ownerPk)
+  };
+  
+  // Get current post ID and store the post
+  const postId = postCounter;
+  posts.insert(disclose(postId), newPost);
+  
+  // Increment post counter for next post
+  postCounter = disclose(postId + 1);
+  
+  return postId;
 }
 
-export circuit takeDown(): Opaque<"string"> {
-  assert(state == State.OCCUPIED, "Attempted to take down post from an empty board");
-  assert(owner == publicKey(localSecretKey(), sequence as Field as Bytes<32>), "Attempted to take down post, but not the current owner");
-  const formerMsg = message.value;
-  state = State.VACANT;
-  sequence.increment(1);
-  message = none<Opaque<"string">>();
-  return formerMsg;
+// Take down (delete) a post by its ID - only owner can delete
+export circuit takeDown(postId: Uint32): [] {
+  // Check that the post exists
+  assert(posts.member(postId), "Post does not exist");
+  
+  // Get the post to verify ownership
+  const existingPost = posts.lookup(postId);
+  
+  // Generate caller's public key
+  const callerPk = publicKey(localSecretKey(), sequence as Field as Bytes<32>);
+  
+  // Verify caller is the owner of the post
+  assert(existingPost.owner == callerPk, "Only the post owner can take down this post");
+  
+  // Remove the post from the map
+  posts.remove(postId);
 }
 
+// Pure circuit to compute public key from secret key and sequence
 export circuit publicKey(sk: Bytes<32>, sequence: Bytes<32>): Bytes<32> {
   return persistentHash<Vector<3, Bytes<32>>>([pad(32, "bboard:pk:"), sequence, sk]);
 }
